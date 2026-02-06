@@ -1,0 +1,215 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Minecraft Web Edition</title>
+    <style>
+        * { -webkit-user-select: none; user-select: none; touch-action: none; outline: none; }
+        body { margin: 0; overflow: hidden; background: #87CEEB; font-family: sans-serif; }
+        #crosshair { position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); color: white; font-size: 20px; pointer-events: none; z-index: 5; }
+        #break-progress { position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); width: 60px; height: 60px; border: 4px solid rgba(255,255,255,0.3); border-radius: 50%; display: none; z-index: 10; }
+        #break-inner { width: 0%; height: 0%; background: #fff; border-radius: 50%; position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); }
+        #controls { position: absolute; bottom: 80px; left: 20px; display: grid; grid-template-columns: repeat(3, 55px); grid-gap: 8px; z-index: 20; }
+        #actions { position: absolute; bottom: 80px; right: 20px; display: flex; flex-direction: column; gap: 12px; z-index: 20; }
+        .btn { width: 55px; height: 55px; background: rgba(0,0,0,0.6); color: white; border: 1px solid #fff; display: flex; align-items: center; justify-content: center; border-radius: 8px; font-size: 22px; }
+        .btn-round { width: 65px; height: 65px; background: rgba(0,0,0,0.6); border: 2px solid #fff; color: white; border-radius: 50%; font-weight: bold; display: flex; align-items: center; justify-content: center; }
+        #hotbar { position: absolute; bottom: 10px; left: 50%; transform: translateX(-50%); display: flex; gap: 4px; background: rgba(0,0,0,0.8); padding: 5px; border: 2px solid #333; z-index: 20; }
+        .slot { width: 45px; height: 45px; background: #555; border: 2px solid #888; position: relative; }
+        .slot.active { border-color: #fff; background: #666; }
+        .item-icon { width: 100%; height: 100%; }
+        .count { position: absolute; bottom: 1px; right: 2px; color: white; font-size: 11px; font-weight: bold; }
+        #inventory-screen { position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); background: rgba(0,0,0,0.9); border: 3px solid #fff; padding: 20px; display: none; grid-template-columns: repeat(3, 60px); gap: 10px; z-index: 100; border-radius: 10px; }
+    </style>
+</head>
+<body>
+    <div id="crosshair">+</div>
+    <div id="break-progress"><div id="break-inner"></div></div>
+    <div id="controls">
+        <div></div><div class="btn" id="up">↑</div><div></div>
+        <div class="btn" id="left">←</div><div class="btn" id="down">↓</div><div class="btn" id="right">→</div>
+    </div>
+    <div id="actions">
+        <div class="btn-round" id="bag-btn">BAG</div>
+        <div class="btn-round" id="jump-btn">JUMP</div>
+    </div>
+    <div id="hotbar">
+        <div class="slot active" data-id="0"><div class="item-icon"></div><div class="count">0</div></div>
+        <div class="slot" data-id="1"><div class="item-icon"></div><div class="count">0</div></div>
+        <div class="slot" data-id="2"><div class="item-icon"></div><div class="count">0</div></div>
+        <div class="slot" data-id="3"><div class="item-icon"></div><div class="count">0</div></div>
+        <div class="slot" data-id="4"><div class="item-icon"></div><div class="count">0</div></div>
+        <div class="slot" data-id="5"><div class="item-icon"></div><div class="count">0</div></div>
+        <div class="slot" data-id="6"><div class="item-icon"></div><div class="count">0</div></div>
+    </div>
+    <div id="inventory-screen"></div>
+
+    <script type="importmap">{ "imports": { "three": "https://unpkg.com/three@0.160.0/build/three.module.js" } }</script>
+    <script type="module">
+        import * as THREE from 'three';
+
+        const scene = new THREE.Scene();
+        scene.background = new THREE.Color(0x87CEEB);
+        const camera = new THREE.PerspectiveCamera(75, window.innerWidth/window.innerHeight, 0.1, 1000);
+        const renderer = new THREE.WebGLRenderer({ antialias: true });
+        renderer.setSize(window.innerWidth, window.innerHeight);
+        document.body.appendChild(renderer.domElement);
+
+        const blocks = [], entities = [], chunks = new Set();
+        const mats = {
+            grass: new THREE.MeshBasicMaterial({ color: 0x567d46 }),
+            log: new THREE.MeshBasicMaterial({ color: 0x4d2926 }),
+            leaves: new THREE.MeshBasicMaterial({ color: 0x228B22 }),
+            dirt: new THREE.MeshBasicMaterial({ color: 0x111111 }),
+            stone: new THREE.MeshBasicMaterial({ color: 0x888888 }),
+            water: new THREE.MeshBasicMaterial({ color: 0x1e90ff, transparent: true, opacity: 0.6 }),
+            wood: new THREE.MeshBasicMaterial({ color: 0xa0522d }),
+            villager: new THREE.MeshBasicMaterial({ color: 0xffdbac }),
+            nose: new THREE.MeshBasicMaterial({ color: 0xe0ac69 })
+        };
+        const itemColors = { grass: '#567d46', log: '#4d2926', dirt: '#000000', stone: '#888888', leaves: '#228B22', wood: '#a0522d' };
+
+        let currentSlot = 0;
+        let inventory = Array(7).fill(null).map(() => ({ type: null, count: 0 }));
+
+        const player = new THREE.Group();
+        player.position.set(0, 10, 0);
+        scene.add(player);
+        player.add(camera);
+        camera.position.y = 1.6;
+
+        function addBlock(x, y, z, type) {
+            const b = new THREE.Mesh(new THREE.BoxGeometry(1, 1, 1), mats[type] || mats.grass);
+            b.position.set(x, y, z);
+            b.userData.type = type;
+            if(type !== 'water') {
+                b.add(new THREE.LineSegments(new THREE.EdgesGeometry(b.geometry), new THREE.LineBasicMaterial({ color: 0x000000 })));
+                blocks.push(b);
+            }
+            scene.add(b);
+            return b;
+        }
+
+        function getY(x, z) {
+            const river = Math.sin(x/15) * 5;
+            if(river < -3.8) return -5;
+            return Math.floor(Math.sin(x/12)*2 + Math.cos(z/12)*2);
+        }
+
+        function spawnVillager(x, z) {
+            const h = getY(x,z);
+            const g = new THREE.Group();
+            const body = new THREE.Mesh(new THREE.BoxGeometry(0.5, 1.1, 0.4), mats.wood);
+            const head = new THREE.Mesh(new THREE.BoxGeometry(0.4, 0.4, 0.4), mats.villager); head.position.y = 0.75;
+            const nose = new THREE.Mesh(new THREE.BoxGeometry(0.1, 0.2, 0.1), mats.nose); nose.position.set(0, 0.7, 0.25);
+            g.add(body, head, nose);
+            g.position.set(x, h+1.6, z);
+            scene.add(g);
+            entities.push({ mesh: g, type: 'villager', timer: 0, dir: new THREE.Vector3() });
+        }
+
+        function buildHouse(x, y, z) {
+            for(let ix=-2; ix<=2; ix++) for(let iz=-2; iz<=2; iz++) {
+                for(let iy=1; iy<=3; iy++) if(Math.abs(ix)==2 || Math.abs(iz)==2) addBlock(x+ix, y+iy, z+iz, 'wood');
+                addBlock(x+ix, y+4, z+iz, 'log');
+            }
+            spawnVillager(x, z);
+        }
+
+        let isBreaking = false, breakStart = 0, breakTarget = null;
+        const ray = new THREE.Raycaster();
+
+        window.addEventListener('touchstart', e => {
+            if(e.target.closest('.btn, .btn-round, #hotbar, #inventory-screen')) return;
+            ray.setFromCamera(new THREE.Vector2(0,0), camera);
+            const inter = ray.intersectObjects(blocks);
+            if(inter.length > 0) { isBreaking = true; breakStart = Date.now(); breakTarget = inter[0]; document.getElementById('break-progress').style.display = 'block'; }
+        });
+
+        window.addEventListener('touchend', e => {
+            if(!isBreaking) return;
+            const holdTime = Date.now() - breakStart;
+            if(holdTime < 350 && inventory[currentSlot].count > 0) {
+                const p = breakTarget.object.position.clone().add(breakTarget.face.normal);
+                if(p.distanceTo(player.position) > 0.8) {
+                    addBlock(Math.round(p.x), Math.round(p.y), Math.round(p.z), inventory[currentSlot].type);
+                    inventory[currentSlot].count--; updateUI();
+                }
+            }
+            isBreaking = false; document.getElementById('break-progress').style.display = 'none';
+        });
+
+        function updateUI() {
+            document.querySelectorAll('.slot').forEach((s, i) => {
+                s.classList.toggle('active', i === currentSlot);
+                const icon = s.querySelector('.item-icon'), txt = s.querySelector('.count');
+                if(inventory[i].count > 0) { icon.style.background = itemColors[inventory[i].type]; txt.innerText = inventory[i].count; }
+                else { icon.style.background = 'transparent'; txt.innerText = '0'; }
+            });
+        }
+
+        let keys = {u:0,d:0,l:0,r:0}, yVel = 0;
+        function animate() {
+            requestAnimationFrame(animate);
+            const s = 0.15;
+            const dir = new THREE.Vector3(); camera.getWorldDirection(dir); dir.y = 0; dir.normalize();
+            const side = new THREE.Vector3().crossVectors(camera.up, dir).normalize();
+            if(keys.u) { player.position.x += dir.x*s; player.position.z += dir.z*s; }
+            if(keys.d) { player.position.x -= dir.x*s; player.position.z -= dir.z*s; }
+            if(keys.l) { player.position.x += side.x*s; player.position.z += side.z*s; }
+            if(keys.r) { player.position.x -= side.x*s; player.position.z -= side.z*s; }
+
+            const gy = getY(player.position.x, player.position.z) + 1.8;
+            yVel -= 0.015; player.position.y += yVel;
+            if(player.position.y < gy) { player.position.y = gy; yVel = 0; }
+
+            if(isBreaking) {
+                const p = Math.min((Date.now() - breakStart)/1000, 1);
+                document.getElementById('break-inner').style.width = document.getElementById('break-inner').style.height = (p*100)+'%';
+                if(p >= 1) {
+                    const type = breakTarget.object.userData.type;
+                    let slot = inventory.find(i => i.type === type) || inventory.find(i => i.count === 0);
+                    if(slot) { slot.type = type; slot.count++; }
+                    scene.remove(breakTarget.object); blocks.splice(blocks.indexOf(breakTarget.object), 1);
+                    isBreaking = false; updateUI();
+                }
+            }
+
+            entities.forEach(en => {
+                if(en.timer-- <= 0) { en.dir.set(Math.random()-0.5, 0, Math.random()-0.5).normalize(); en.timer = 100; }
+                en.mesh.position.addScaledVector(en.dir, 0.03);
+                en.mesh.position.y = getY(en.mesh.position.x, en.mesh.position.z) + 1.2;
+            });
+
+            const px = Math.floor(player.position.x), pz = Math.floor(player.position.z);
+            for(let x=px-7; x<px+7; x++) for(let z=pz-7; z<pz+7; z++) {
+                if(!chunks.has(`${x},${z}`)) {
+                    const h = getY(x,z);
+                    if(h === -5) addBlock(x, -5, z, 'water');
+                    else {
+                        addBlock(x, h, z, 'grass');
+                        if(x%12==0 && z%12==0) { for(let i=1; i<=3; i++) addBlock(x,h+i,z,'log'); addBlock(x,h+4,z,'leaves'); }
+                        if(x === 10 && z === 10) buildHouse(x, h, z); // ÉP SINH LÀNG Ở (10,10)
+                    }
+                    chunks.add(`${x},${z}`);
+                }
+            }
+            renderer.render(scene, camera);
+        }
+
+        const setup = (id, k) => { document.getElementById(id).ontouchstart = (e) => { e.preventDefault(); keys[k]=1; }; document.getElementById(id).ontouchend = () => keys[k]=0; };
+        setup('up','u'); setup('down','d'); setup('left','l'); setup('right','r');
+        document.getElementById('jump-btn').ontouchstart = () => { if(yVel === 0) yVel = 0.28; };
+        document.querySelectorAll('.slot').forEach(s => s.onclick = () => { currentSlot = parseInt(s.dataset.id); updateUI(); });
+        document.getElementById('bag-btn').onclick = () => {
+            const s = document.getElementById('inventory-screen');
+            s.style.display = s.style.display === 'grid' ? 'none' : 'grid';
+            if(s.style.display === 'grid') s.innerHTML = Object.keys(itemColors).map(type => `<div class="slot" style="background:${itemColors[type]}" onclick="window.addToHotbar('${type}')"></div>`).join('');
+        };
+        window.addToHotbar = (type) => { inventory[currentSlot] = { type, count: 64 }; updateUI(); document.getElementById('inventory-screen').style.display = 'none'; };
+        let lookId = null, lastX, lastY;
+        window.addEventListener('touchstart', e => { for(let t of e.changedTouches) if(t.clientX > window.innerWidth/2) { lookId = t.identifier; lastX = t.clientX; lastY = t.clientY; } });
+        window.addEventListener('touchmove', e => { if(lookId !== null) for(let t of e.changedTouches) if(t.identifier === lookId) { player.rotation.y -= (t.clientX - lastX) * 0.005; camera.rotation.x = Math.max(-1.4, Math.min(1.4, camera.rotation.x - (t.clientY - lastY) * 0.005)); lastX = t.clientX; lastY = t.clientY; } });
+        animate();
+    </script>
+</body>
+</html>
